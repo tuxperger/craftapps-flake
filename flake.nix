@@ -4,20 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    # App sources track each repo's default branch; `nix flake update` moves them forward,
-    # flake.lock pins the exact commits.
-    photocraft = { url = "github:storytold/photocraft"; flake = false; };
-    lightcraft = { url = "github:storytold/lightcraft"; flake = false; };
-    vectorcraft = { url = "github:storytold/vectorcraft"; flake = false; };
-    filmcraft = { url = "github:storytold/filmcraft"; flake = false; };
-    printcraft = { url = "github:storytold/printcraft"; flake = false; };
-    soundcraft = { url = "github:storytold/soundcraft"; flake = false; };
-    wordcraft = { url = "github:storytold/wordcraft"; flake = false; };
-    gridcraft = { url = "github:storytold/gridcraft"; flake = false; };
-    deckcraft = { url = "github:storytold/deckcraft"; flake = false; };
-    cadcraft = { url = "github:storytold/cadcraft"; flake = false; };
-    effectcraft = { url = "github:storytold/effectcraft"; flake = false; };
-    designcraft = { url = "github:storytold/designcraft"; flake = false; };
+    # The apps themselves are fetched as upstream .deb releases (see nix/sources.json);
+    # craft-fonts has no releases, so it tracks the default branch.
     craft-fonts = { url = "github:storytold/craft-fonts"; flake = false; };
   };
 
@@ -32,7 +20,6 @@
         photocraft = {
           displayName = "PhotoCraft";
           description = "Image editor, clean-room reimplementation of Adobe Photoshop";
-          features = [ "heif" ];
         };
         lightcraft = {
           displayName = "LightCraft";
@@ -45,8 +32,6 @@
         filmcraft = {
           displayName = "FilmCraft";
           description = "Video editor, clean-room reimplementation of Adobe Premiere Pro";
-          needsAlsa = true;
-          needsGtk = true;
         };
         printcraft = {
           displayName = "PrintCraft";
@@ -55,7 +40,6 @@
         soundcraft = {
           displayName = "SoundCraft";
           description = "Digital audio workstation, clean-room reimplementation of Avid Pro Tools";
-          needsAlsa = true;
         };
         wordcraft = {
           displayName = "WordCraft";
@@ -68,7 +52,6 @@
         deckcraft = {
           displayName = "DeckCraft";
           description = "Presentations, clean-room reimplementation of Microsoft PowerPoint";
-          needsAlsa = true;
         };
         cadcraft = {
           displayName = "CADCraft";
@@ -77,14 +60,15 @@
         effectcraft = {
           displayName = "EffectCraft";
           description = "Motion graphics and visual effects";
-          needsAlsa = true;
         };
         designcraft = {
           displayName = "DesignCraft";
           description = "Page layout and design";
-          useCraftFonts = true;
         };
       };
+
+      # Versions and hashes of the upstream debs; refresh with `nix run .#update`.
+      sources = lib.importJSON ./nix/sources.json;
 
       mkApps =
         pkgs:
@@ -94,31 +78,47 @@
             args
             // {
               inherit pname;
-              src = inputs.${pname};
-              craft-fonts = inputs.craft-fonts;
+              source = sources.${pname};
             }
           )
         ) apps;
+
+      # A single package holding only the chosen apps, e.g. withApps pkgs [ "photocraft" "wordcraft" ].
+      withApps =
+        pkgs: names:
+        pkgs.symlinkJoin {
+          name = "crafting-apps";
+          paths = map (name: (mkApps pkgs).${name}) names;
+        };
     in
     {
       packages = forAllSystems (
         pkgs:
-        let
-          craftApps = mkApps pkgs;
-        in
-        craftApps
+        mkApps pkgs
         // {
           craft-fonts = pkgs.runCommand "craft-fonts" { } ''
             mkdir -p $out/share/fonts
             cp -R ${inputs.craft-fonts}/fonts $out/share/fonts/craft-fonts
           '';
-          all = pkgs.symlinkJoin {
-            name = "crafting-apps";
-            paths = lib.attrValues craftApps;
-          };
+          all = withApps pkgs (lib.attrNames apps);
           default = self.packages.${pkgs.stdenv.hostPlatform.system}.photocraft;
         }
       );
+
+      lib = { inherit withApps; };
+
+      apps = forAllSystems (pkgs: {
+        update = {
+          type = "app";
+          program = lib.getExe (
+            pkgs.writeShellApplication {
+              name = "update-crafting-apps";
+              runtimeInputs = [ pkgs.curl pkgs.jq ];
+              text = "APPS='${lib.concatStringsSep " " (lib.attrNames apps)}'\n" + builtins.readFile ./nix/update.sh;
+            }
+          );
+        };
+      });
 
       overlays.default = final: _prev: {
         craftApps = removeAttrs self.packages.${final.stdenv.hostPlatform.system} [ "default" ];
@@ -129,25 +129,22 @@
         let
           cfg = config.programs.crafting-apps;
           pkgsFor = self.packages.${pkgs.stdenv.hostPlatform.system};
+          enabled = lib.filter (name: cfg.${name}.enable) (lib.attrNames apps);
         in
         {
-          options.programs.crafting-apps = {
-            enable = lib.mkEnableOption "the Crafting Apps by storytold";
-            apps = lib.mkOption {
-              type = lib.types.listOf (lib.types.enum (lib.attrNames apps));
-              default = lib.attrNames apps;
-              example = [ "photocraft" "lightcraft" "vectorcraft" ];
-              description = "Which Crafting Apps to install (all of them by default).";
+          # One switch per app: programs.crafting-apps.photocraft.enable = true;
+          options.programs.crafting-apps =
+            lib.mapAttrs (_: app: { enable = lib.mkEnableOption app.displayName; }) apps
+            // {
+              fonts = lib.mkOption {
+                type = lib.types.bool;
+                default = true;
+                description = "Install the craft-fonts collection system-wide when any app is enabled.";
+              };
             };
-            fonts = lib.mkOption {
-              type = lib.types.bool;
-              default = true;
-              description = "Install the craft-fonts collection system-wide.";
-            };
-          };
 
-          config = lib.mkIf cfg.enable {
-            environment.systemPackages = map (name: pkgsFor.${name}) cfg.apps;
+          config = lib.mkIf (enabled != [ ]) {
+            environment.systemPackages = map (name: pkgsFor.${name}) enabled;
             fonts.packages = lib.optional cfg.fonts pkgsFor.craft-fonts;
             # Open/Save dialogs go through the XDG file-chooser portal (rfd).
             xdg.portal.enable = lib.mkDefault true;

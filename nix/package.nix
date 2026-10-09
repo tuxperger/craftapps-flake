@@ -1,15 +1,16 @@
-# Generic builder for one Crafting App (https://github.com/storytold).
+# Generic package for one Crafting App (https://github.com/storytold), repacked from the upstream
+# .deb published on the app's GitHub releases page.
 #
-# Every app repo has the same layout: a Cargo workspace with apps/<name> (GUI, egui + wgpu) and
-# apps/<name>-cli, plus packaging/linux/ai.storyteller.<name>.{desktop,mime.xml,metainfo.xml.in}
-# and assets/app-icon/hicolor. This mirrors packaging/linux/package.sh from those repos.
+# Every deb has the same layout: usr/bin/<name> (GUI, egui + wgpu) and usr/bin/<name>-cli, plus
+# usr/share/{applications,mime,metainfo,icons,doc}. Versions and hashes live in sources.json,
+# refreshed by `nix run .#update`.
 {
   lib,
-  rustPlatform,
-  pkg-config,
-  wrapGAppsHook3,
+  stdenv,
+  fetchurl,
+  dpkg,
+  autoPatchelfHook,
   alsa-lib,
-  gtk3,
   libxkbcommon,
   wayland,
   libx11,
@@ -19,29 +20,42 @@
   libxcb,
   vulkan-loader,
   libGL,
-  craft-fonts ? null,
 
   pname,
-  src,
   displayName,
   description,
-  homepage ? "https://getartcraft.com/apps/${pname}",
-  features ? [ ],
-  # Native libraries the workspace links against (e.g. alsa-sys needs alsa-lib).
-  needsAlsa ? false,
-  needsGtk ? false,
-  # Embed fonts from craft-fonts at build time (only designcraft supports it today).
-  useCraftFonts ? false,
+  # Entry from sources.json: { version, debName, sha256.<system> }.
+  source,
 }:
 
 let
-  cargoToml = lib.importTOML "${src}/Cargo.toml";
-  version = cargoToml.workspace.package.version;
-  appId = "ai.storyteller.${pname}";
+  inherit (source) version debName;
+  system = stdenv.hostPlatform.system;
+  arch = stdenv.hostPlatform.parsed.cpu.name;
+in
+stdenv.mkDerivation {
+  inherit pname version;
+
+  src = fetchurl {
+    url = "https://github.com/storytold/${pname}/releases/download/v${version}/${debName}-${version}-linux-${arch}.deb";
+    sha256 = source.sha256.${system} or (throw "${pname}: no upstream deb for ${system}");
+  };
+
+  nativeBuildInputs = [
+    dpkg
+    autoPatchelfHook
+  ];
+
+  # ELF NEEDED entries; autoPatchelf only adds the ones a binary actually links against
+  # (alsa-lib is used by the apps with audio).
+  buildInputs = [
+    stdenv.cc.cc.lib
+    alsa-lib
+  ];
 
   # winit and wgpu dlopen these at runtime, so they are not ELF NEEDED entries
-  # (see packaging/linux/nfpm.yaml in each repo).
-  runtimeLibs = [
+  # (the deb lists them under Depends/Recommends).
+  runtimeDependencies = [
     libxkbcommon
     wayland
     libx11
@@ -52,58 +66,27 @@ let
     vulkan-loader
     libGL
   ];
-in
-rustPlatform.buildRustPackage {
-  inherit pname version src;
 
-  cargoLock = {
-    lockFile = "${src}/Cargo.lock";
-    # effectcraft pins filmcraft crates by git rev; fetch them without per-rev hashes.
-    allowBuiltinFetchGit = true;
-  };
+  dontConfigure = true;
+  dontBuild = true;
 
-  cargoBuildFlags = [
-    "-p"
-    pname
-    "-p"
-    "${pname}-cli"
-  ];
-  buildFeatures = features;
-
-  # The test suites are large (golden images, corpora) and not needed to install the apps.
-  doCheck = false;
-
-  nativeBuildInputs = [ pkg-config ] ++ lib.optional needsGtk wrapGAppsHook3;
-  buildInputs = lib.optional needsAlsa alsa-lib ++ lib.optional needsGtk gtk3;
-
-  env = lib.optionalAttrs (useCraftFonts && craft-fonts != null) {
-    CRAFT_FONTS_DIR = "${craft-fonts}";
-    CRAFT_FONTS_REQUIRED = "1";
-  };
-
-  postInstall = ''
-    install -Dm644 packaging/linux/${appId}.desktop $out/share/applications/${appId}.desktop
-    install -Dm644 packaging/linux/${appId}.mime.xml $out/share/mime/packages/${appId}.xml
-    mkdir -p $out/share/metainfo $out/share/icons
-    sed -e 's/@VERSION@/${version}/g' -e 's/@DATE@/1970-01-01/g' \
-      packaging/linux/${appId}.metainfo.xml.in > $out/share/metainfo/${appId}.metainfo.xml
-    cp -R assets/app-icon/hicolor $out/share/icons/
-  '';
-
-  postFixup = ''
-    for bin in $out/bin/${pname} $out/bin/${pname}-cli; do
-      patchelf --add-rpath ${lib.makeLibraryPath runtimeLibs} "$bin"
-    done
+  installPhase = ''
+    runHook preInstall
+    mkdir -p $out
+    cp -R usr/. $out/
+    runHook postInstall
   '';
 
   meta = {
-    inherit description homepage;
+    inherit description;
+    homepage = "https://getartcraft.com/apps/${debName}";
     longDescription = "${displayName}: ${description}";
     license = with lib.licenses; [
       mit
       asl20
     ];
-    mainProgram = pname;
-    platforms = lib.platforms.linux;
+    sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
+    mainProgram = debName;
+    platforms = lib.attrNames source.sha256;
   };
 }
