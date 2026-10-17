@@ -1,7 +1,7 @@
 # Generic package for one Crafting App (https://github.com/storytold), repacked from the upstream
 # .deb published on the app's GitHub releases page.
 #
-# Every deb has the same layout: usr/bin/<name> (GUI, egui + wgpu) and usr/bin/<name>-cli, plus
+# Every deb has the same layout: usr/bin/<name> (GUI, egui + wgpu), usually usr/bin/<name>-cli, plus
 # usr/share/{applications,mime,metainfo,icons,doc}. Versions and hashes live in sources.json,
 # refreshed by `nix run .#update`.
 {
@@ -22,6 +22,8 @@
   libGL,
 
   pname,
+  # Repository under github.com/storytold that publishes the releases.
+  repo,
   displayName,
   description,
   # Entry from sources.json: { version, debName, sha256.<system> }.
@@ -37,7 +39,7 @@ stdenv.mkDerivation {
   inherit pname version;
 
   src = fetchurl {
-    url = "https://github.com/storytold/${pname}/releases/download/v${version}/${debName}-${version}-linux-${arch}.deb";
+    url = "https://github.com/storytold/${repo}/releases/download/v${version}/${debName}-${version}-linux-${arch}.deb";
     sha256 = source.sha256.${system} or (throw "${pname}: no upstream deb for ${system}");
   };
 

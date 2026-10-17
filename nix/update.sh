@@ -11,8 +11,10 @@ auth=()
 [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
 
 result='{}'
-for app in $APPS; do
-  release=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/storytold/$app/releases/latest")
+for pair in $APPS; do
+  app=${pair%%:*}
+  repo=${pair#*:}
+  release=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/storytold/$repo/releases/latest")
   entry=$(jq '
     (.tag_name | ltrimstr("v")) as $version
     | [.assets[] | select(.name | endswith(".deb"))] as $debs

@@ -16,6 +16,7 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # Each app is fetched from github.com/storytold/<repo>; repo defaults to the attribute name.
       apps = {
         photocraft = {
           displayName = "PhotoCraft";
@@ -35,6 +36,7 @@
         };
         printcraft = {
           displayName = "PrintCraft";
+          repo = "pdfcraft"; # renamed upstream; the old printcraft repo redirects here
           description = "PDF editor, clean-room reimplementation of Adobe Acrobat";
         };
         soundcraft = {
@@ -65,6 +67,15 @@
           displayName = "DesignCraft";
           description = "Page layout and design";
         };
+        figcraft = {
+          displayName = "FigCraft";
+          description = "Interface design and prototyping, Figma-style";
+        };
+        artcraft-launcher = {
+          displayName = "ArtCraft Launcher";
+          description = "Launcher for the Crafting Apps";
+          repo = "craft-launcher";
+        };
       };
 
       # Versions and hashes of the upstream debs; refresh with `nix run .#update`.
@@ -75,9 +86,10 @@
         lib.mapAttrs (
           pname: args:
           pkgs.callPackage ./nix/package.nix (
-            args
+            removeAttrs args [ "repo" ]
             // {
               inherit pname;
+              repo = args.repo or pname;
               source = sources.${pname};
             }
           )
@@ -114,7 +126,10 @@
             pkgs.writeShellApplication {
               name = "update-crafting-apps";
               runtimeInputs = [ pkgs.curl pkgs.jq ];
-              text = "APPS='${lib.concatStringsSep " " (lib.attrNames apps)}'\n" + builtins.readFile ./nix/update.sh;
+              # APPS holds <attr>:<repo> pairs.
+              text =
+                "APPS='${lib.concatStringsSep " " (lib.mapAttrsToList (name: app: "${name}:${app.repo or name}") apps)}'\n"
+                + builtins.readFile ./nix/update.sh;
             }
           );
         };
